@@ -69,6 +69,7 @@ simple_stmt[stmt_ty] (memo):
     | &'return' return_stmt
     | &('import' | 'from') import_stmt
     | &'raise' raise_stmt
+    | &'yeet' raise_stmt
     | 'pass' { _Py_Pass(EXTRA) }
     | &'del' del_stmt
     | &'yield' yield_stmt
@@ -271,6 +272,65 @@ name_or_attr[expr_ty]:
     | attr
     | NAME
 
+
+lambdef[expr_ty]:
+    | '{' a=[lambda_params]  '=>' b=expression '}' {
+        _Py_Lambda((a) ? a : CHECK(arguments_ty, _PyPegen_empty_arguments(p)), b, EXTRA) }
+    | 'lambda' a=[lambda_params] ':' b=expression {
+        _Py_Lambda((a) ? a : CHECK(arguments_ty, _PyPegen_empty_arguments(p)), b, EXTRA) }
+
+lambda_params[arguments_ty]:
+    | invalid_lambda_parameters
+    | lambda_parameters
+
+# lambda_parameters etc. duplicates parameters but without annotations
+# or type comments, and if there's no comma after a parameter, we expect
+# a colon, not a close parenthesis.  (For more, see parameters above.)
+#
+lambda_parameters[arguments_ty]:
+    | a=lambda_slash_no_default b[asdl_arg_seq*]=lambda_param_no_default* c=lambda_param_with_default* d=[lambda_star_etc] {
+        _PyPegen_make_arguments(p, a, NULL, b, c, d) }
+    | a=lambda_slash_with_default b=lambda_param_with_default* c=[lambda_star_etc] {
+        _PyPegen_make_arguments(p, NULL, a, NULL, b, c) }
+    | a[asdl_arg_seq*]=lambda_param_no_default+ b=lambda_param_with_default* c=[lambda_star_etc] {
+        _PyPegen_make_arguments(p, NULL, NULL, a, b, c) }
+    | a=lambda_param_with_default+ b=[lambda_star_etc] { _PyPegen_make_arguments(p, NULL, NULL, NULL, a, b)}
+    | a=lambda_star_etc { _PyPegen_make_arguments(p, NULL, NULL, NULL, NULL, a) }
+
+lambda_slash_no_default[asdl_arg_seq*]:
+    | a[asdl_arg_seq*]=lambda_param_no_default+ '/' ',' { a }
+    | a[asdl_arg_seq*]=lambda_param_no_default+ '/' &':' { a }
+    | a[asdl_arg_seq*]=lambda_param_no_default+ '/' &'=>' { a }
+lambda_slash_with_default[SlashWithDefault*]:
+    | a=lambda_param_no_default* b=lambda_param_with_default+ '/' ',' { _PyPegen_slash_with_default(p, (asdl_arg_seq *)a, b) }
+    | a=lambda_param_no_default* b=lambda_param_with_default+ '/' &':' { _PyPegen_slash_with_default(p, (asdl_arg_seq *)a, b) }
+    | a=lambda_param_no_default* b=lambda_param_with_default+ '/' &'=>' { _PyPegen_slash_with_default(p, (asdl_arg_seq *)a, b) }
+
+lambda_star_etc[StarEtc*]:
+    | '*' a=lambda_param_no_default b=lambda_param_maybe_default* c=[lambda_kwds] {
+        _PyPegen_star_etc(p, a, b, c) }
+    | '*' ',' b=lambda_param_maybe_default+ c=[lambda_kwds] {
+        _PyPegen_star_etc(p, NULL, b, c) }
+    | a=lambda_kwds { _PyPegen_star_etc(p, NULL, NULL, a) }
+    | invalid_lambda_star_etc
+
+lambda_kwds[arg_ty]: '**' a=lambda_param_no_default { a }
+
+lambda_param_no_default[arg_ty]:
+    | a=lambda_param ',' { a }
+    | a=lambda_param &':' { a }
+    | a=lambda_param &'=>' { a }
+lambda_param_with_default[NameDefaultPair*]:
+    | a=lambda_param c=default ',' { _PyPegen_name_default_pair(p, a, c, NULL) }
+    | a=lambda_param c=default &':' { _PyPegen_name_default_pair(p, a, c, NULL) }
+    | a=lambda_param c=default &'=>' { _PyPegen_name_default_pair(p, a, c, NULL) }
+lambda_param_maybe_default[NameDefaultPair*]:
+    | a=lambda_param c=default? ',' { _PyPegen_name_default_pair(p, a, c, NULL) }
+    | a=lambda_param c=default? &':' { _PyPegen_name_default_pair(p, a, c, NULL) }
+    | a=lambda_param c=default? &'=>' { _PyPegen_name_default_pair(p, a, c, NULL) }
+lambda_param[arg_ty]: a=NAME { _Py_arg(a->v.Name.id, NULL, NULL, EXTRA) }
+
+
 group_pattern[expr_ty]:
     | '(' pattern=pattern ')' { pattern }
 
@@ -320,6 +380,8 @@ return_stmt[stmt_ty]:
     | 'return' a=[star_expressions] { _Py_Return(a, EXTRA) }
 
 raise_stmt[stmt_ty]:
+    | 'yeet' a=expression b=['from' z=expression { z }] { _Py_Raise(a, b, EXTRA) }
+    | 'yeet' { _Py_Raise(NULL, NULL, EXTRA) }
     | 'raise' a=expression b=['from' z=expression { z }] { _Py_Raise(a, b, EXTRA) }
     | 'raise' { _Py_Raise(NULL, NULL, EXTRA) }
 
@@ -452,56 +514,6 @@ expression[expr_ty] (memo):
     | a=disjunction 'if' b=disjunction 'else' c=expression { _Py_IfExp(b, a, c, EXTRA) }
     | disjunction
     | lambdef
-
-lambdef[expr_ty]:
-    | 'lambda' a=[lambda_params] ':' b=expression {
-        _Py_Lambda((a) ? a : CHECK(arguments_ty, _PyPegen_empty_arguments(p)), b, EXTRA) }
-
-lambda_params[arguments_ty]:
-    | invalid_lambda_parameters
-    | lambda_parameters
-
-# lambda_parameters etc. duplicates parameters but without annotations
-# or type comments, and if there's no comma after a parameter, we expect
-# a colon, not a close parenthesis.  (For more, see parameters above.)
-#
-lambda_parameters[arguments_ty]:
-    | a=lambda_slash_no_default b[asdl_arg_seq*]=lambda_param_no_default* c=lambda_param_with_default* d=[lambda_star_etc] {
-        _PyPegen_make_arguments(p, a, NULL, b, c, d) }
-    | a=lambda_slash_with_default b=lambda_param_with_default* c=[lambda_star_etc] {
-        _PyPegen_make_arguments(p, NULL, a, NULL, b, c) }
-    | a[asdl_arg_seq*]=lambda_param_no_default+ b=lambda_param_with_default* c=[lambda_star_etc] {
-        _PyPegen_make_arguments(p, NULL, NULL, a, b, c) }
-    | a=lambda_param_with_default+ b=[lambda_star_etc] { _PyPegen_make_arguments(p, NULL, NULL, NULL, a, b)}
-    | a=lambda_star_etc { _PyPegen_make_arguments(p, NULL, NULL, NULL, NULL, a) }
-
-lambda_slash_no_default[asdl_arg_seq*]:
-    | a[asdl_arg_seq*]=lambda_param_no_default+ '/' ',' { a }
-    | a[asdl_arg_seq*]=lambda_param_no_default+ '/' &':' { a }
-lambda_slash_with_default[SlashWithDefault*]:
-    | a=lambda_param_no_default* b=lambda_param_with_default+ '/' ',' { _PyPegen_slash_with_default(p, (asdl_arg_seq *)a, b) }
-    | a=lambda_param_no_default* b=lambda_param_with_default+ '/' &':' { _PyPegen_slash_with_default(p, (asdl_arg_seq *)a, b) }
-
-lambda_star_etc[StarEtc*]:
-    | '*' a=lambda_param_no_default b=lambda_param_maybe_default* c=[lambda_kwds] {
-        _PyPegen_star_etc(p, a, b, c) }
-    | '*' ',' b=lambda_param_maybe_default+ c=[lambda_kwds] {
-        _PyPegen_star_etc(p, NULL, b, c) }
-    | a=lambda_kwds { _PyPegen_star_etc(p, NULL, NULL, a) }
-    | invalid_lambda_star_etc
-
-lambda_kwds[arg_ty]: '**' a=lambda_param_no_default { a }
-
-lambda_param_no_default[arg_ty]:
-    | a=lambda_param ',' { a }
-    | a=lambda_param &':' { a }
-lambda_param_with_default[NameDefaultPair*]:
-    | a=lambda_param c=default ',' { _PyPegen_name_default_pair(p, a, c, NULL) }
-    | a=lambda_param c=default &':' { _PyPegen_name_default_pair(p, a, c, NULL) }
-lambda_param_maybe_default[NameDefaultPair*]:
-    | a=lambda_param c=default? ',' { _PyPegen_name_default_pair(p, a, c, NULL) }
-    | a=lambda_param c=default? &':' { _PyPegen_name_default_pair(p, a, c, NULL) }
-lambda_param[arg_ty]: a=NAME { _Py_arg(a->v.Name.id, NULL, NULL, EXTRA) }
 
 disjunction[expr_ty] (memo):
     | a=conjunction b=('or' c=conjunction { c })+ { _Py_BoolOp(
@@ -852,4 +864,4 @@ invalid_except_block:
     | 'except' a=expression ',' expressions ['as' NAME ] ':' {
         RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a, "exception group must be parenthesized") }
     | 'except' expression ['as' NAME ] &&':'
-    | 'except' &&':' 
+    | 'except' &&':'
